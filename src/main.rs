@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::error::Error;
 use std::fs::File;
+use odbc::*;
+use dotenv::dotenv;
+use std::env;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct JobPosting {
@@ -19,6 +22,8 @@ struct JobPosting {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    dotenv().ok();
+
     let base_url = "https://careers.google.com/api/v3/search/";
 
     let mut headers = HeaderMap::new();
@@ -115,12 +120,69 @@ async fn main() -> Result<(), Box<dyn Error>> {
         page += 1;
     }
 
-    // Write to JSON file
     let file = File::create("google_jobs.json")?;
     serde_json::to_writer_pretty(file, &all_jobs)?;
 
     println!("Found {} jobs", all_jobs.len());
     println!("Data has been written to google_jobs.json");
+    println!("Found {} jobs", all_jobs.len());
+
+    let env = create_environment_v3().map_err(|e| e.unwrap())?;
+
+    let conn_str = format!(
+        "Driver={{SnowflakeDSIIDriver}};\
+        Server={};\
+        UID={};\
+        PWD={};\
+        Warehouse={};\
+        Database={};\
+        Schema={};",
+        env::var("SNOWFLAKE_ACCOUNT")?,
+        env::var("SNOWFLAKE_USER")?,
+        env::var("SNOWFLAKE_PASSWORD")?,
+        env::var("SNOWFLAKE_WAREHOUSE")?,
+        env::var("SNOWFLAKE_DATABASE")?,
+        env::var("SNOWFLAKE_SCHEMA")?,
+    );
+
+    let conn = env.connect_with_connection_string(&conn_str)?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS job_postings (
+            id STRING,
+            title STRING,
+            location STRING,
+            description STRING,
+            qualifications STRING,
+            responsibilities STRING,
+            company STRING,
+            url STRING,
+            date_posted STRING
+        )",
+        (),
+    )?;
+
+    let insert_sql = "INSERT INTO job_postings (
+        id, title, location, description, qualifications, responsibilities, company, url, date_posted
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    let mut stmt = conn.prepare(insert_sql)?;
+
+    for job in all_jobs {
+        stmt.execute(&[
+            &job.id,
+            &job.title,
+            &job.location,
+            &job.description,
+            &job.qualifications,
+            &job.responsibilities,
+            &job.company,
+            &job.url,
+            &job.date_posted,
+        ])?;
+    }
+
+    println!("Data has been inserted into Snowflake.");
 
     Ok(())
 }
